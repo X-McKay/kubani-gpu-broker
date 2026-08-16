@@ -20,9 +20,20 @@ that document before changing behavior here.
 
 ## Current phase
 
-**Phase 1 — transparent proxy.** Byte-faithful streaming passthrough with
-in-flight accounting, health endpoints, and Prometheus metrics. No sleep,
-no wake, no leases yet.
+**Phases 1-3 (engine lifecycle) — implemented.** Byte-faithful streaming
+passthrough with in-flight accounting; vLLM sleep driver; transparent
+single-flight wake-on-request; feature-flagged idle auto-sleep
+(`policies.auto_sleep_enabled`, default off pending GB10 qualification);
+authenticated admin listener (`:8081`) with manual sleep/wake and state;
+Prometheus metrics. Not yet: Kubernetes Lease, exclusive training lease
+API, Temporal activities.
+
+Two listeners (spec section 24.2):
+
+- `:8080` public OpenAI proxy (`/v1/*`, `/healthz`, `/readyz`)
+- `:8081` admin (`/metrics`, `/healthz` unauthenticated;
+  `/internal/v1/*` requires `Authorization: Bearer $GPU_BROKER_ADMIN_TOKEN`;
+  fails closed when the token is unset)
 
 ## Development
 
@@ -42,7 +53,7 @@ engines:
 proxy:
   connect_timeout_seconds: 10
 EOF
-CONFIG_PATH=config.yaml uv run uvicorn --factory kubani_gpu_broker:create_app --port 8080
+CONFIG_PATH=config.yaml GPU_BROKER_ADMIN_TOKEN=dev uv run python -m kubani_gpu_broker
 ```
 
 ## Deployment

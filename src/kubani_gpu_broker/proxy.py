@@ -1,23 +1,26 @@
 """Transparent streaming reverse proxy for /v1/*.
 
-Phase 1 of the adopted spec: byte-faithful passthrough to the engine with
-in-flight accounting. No idle sleep, no wake, no lease yet — but the
-accounting here is what those phases build on, so its lifetime rules
-matter: a request is in flight from just before the upstream send until
-the response body is fully delivered (or the client disconnects), never
-merely until first byte.
+Byte-faithful passthrough with in-flight accounting, fronted by the
+sleep/wake gate: a request that finds the engine sleeping triggers a
+single-flight wake and is then forwarded — vLLM itself would let the
+request hang forever (vllm#45326), so this gate is a correctness
+requirement, not a convenience.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 
-from .engines import Engine
-from .telemetry import Metrics
+from .state import EngineUnavailableError, GpuUnavailableError, WakeFailedError
+
+if TYPE_CHECKING:
+    from .app import Broker
 
 # Hop-by-hop headers must not be forwarded in either direction (RFC 9110).
 _HOP_BY_HOP = {
@@ -39,14 +42,45 @@ def _forwardable(headers: httpx.Headers | list[tuple[str, str]]) -> dict[str, st
     return {k: v for k, v in items if k.lower() not in _HOP_BY_HOP}
 
 
-def build_router(engine: Engine, client: httpx.AsyncClient, metrics: Metrics) -> APIRouter:
+def _error_response(status: int, error_type: str, message: str, **headers: str) -> Response:
+    return Response(
+        content=json.dumps({"error": {"type": error_type, "message": message}}),
+        status_code=status,
+        media_type="application/json",
+        headers=headers or None,
+    )
+
+
+def build_router(broker: Broker) -> APIRouter:
     router = APIRouter()
+    engine = broker.engine
+    client = broker.client
+    metrics = broker.metrics
 
     @router.api_route(
         "/v1/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
     )
     async def proxy(request: Request, path: str) -> Response:
+        try:
+            await engine.ensure_awake()
+        except GpuUnavailableError:
+            metrics.requests_total.labels(engine=engine.name, status="gpu_unavailable").inc()
+            return _error_response(
+                503,
+                "gpu_temporarily_unavailable",
+                "The inference GPU is temporarily allocated to an exclusive workload.",
+                **{"Retry-After": "30"},
+            )
+        except (WakeFailedError, EngineUnavailableError):
+            metrics.requests_total.labels(engine=engine.name, status="engine_unavailable").inc()
+            return _error_response(
+                503,
+                "engine_unavailable",
+                "The inference engine failed to wake and needs recovery.",
+                **{"Retry-After": "60"},
+            )
+
         url = f"{engine.base_url}/v1/{path}"
         if request.url.query:
             url = f"{url}?{request.url.query}"
@@ -66,13 +100,8 @@ def build_router(engine: Engine, client: httpx.AsyncClient, metrics: Metrics) ->
             _finish(engine, metrics)
             metrics.upstream_errors_total.labels(engine=engine.name, type=type(exc).__name__).inc()
             metrics.requests_total.labels(engine=engine.name, status="upstream_error").inc()
-            return Response(
-                content=(
-                    '{"error": {"type": "upstream_unreachable", '
-                    '"message": "The inference engine could not be reached."}}'
-                ),
-                status_code=502,
-                media_type="application/json",
+            return _error_response(
+                502, "upstream_unreachable", "The inference engine could not be reached."
             )
 
         metrics.requests_total.labels(engine=engine.name, status=str(upstream.status_code)).inc()
@@ -97,6 +126,6 @@ def build_router(engine: Engine, client: httpx.AsyncClient, metrics: Metrics) ->
     return router
 
 
-def _finish(engine: Engine, metrics: Metrics) -> None:
+def _finish(engine, metrics) -> None:
     engine.release()
     metrics.inflight_requests.labels(engine=engine.name).dec()

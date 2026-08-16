@@ -5,6 +5,7 @@ import json
 
 import httpx
 
+from kubani_gpu_broker.admin import create_admin_app
 from kubani_gpu_broker.app import create_app
 from kubani_gpu_broker.config import BrokerConfig, EngineConfig
 
@@ -63,12 +64,12 @@ async def test_unreachable_upstream_returns_502():
     assert resp.json()["error"]["type"] == "upstream_unreachable"
 
 
-async def test_inflight_accounting_spans_stream(broker_app, fake_vllm):
+async def test_inflight_accounting_spans_stream(broker, broker_app, fake_vllm):
     """A streaming request stays in flight until the stream finishes.
 
     Spec section 9.2: do not reset the idle clock at first token.
     """
-    engine = broker_app.state.engine
+    engine = broker.engine
     fake_vllm.stream_gate = asyncio.Event()
 
     transport = httpx.ASGITransport(app=broker_app)
@@ -102,9 +103,11 @@ async def test_inflight_accounting_spans_stream(broker_app, fake_vllm):
     assert engine.last_activity > before
 
 
-async def test_metrics_track_requests(broker_client):
+async def test_metrics_track_requests(broker, broker_client):
     await broker_client.post("/v1/chat/completions", json={"model": "m", "messages": []})
-    metrics = (await broker_client.get("/metrics")).text
+    admin_transport = httpx.ASGITransport(app=create_admin_app(broker))
+    async with httpx.AsyncClient(transport=admin_transport, base_url="http://admin") as admin:
+        metrics = (await admin.get("/metrics")).text
     assert 'kubani_gpu_broker_requests_total{engine="main",status="200"} 1.0' in metrics
     assert 'kubani_gpu_broker_inflight_requests{engine="main"} 0.0' in metrics
 
@@ -120,18 +123,22 @@ async def test_request_body_streams_through(broker_client, fake_vllm):
     assert fake_vllm.requests_seen[-1]["messages"][0]["content"] == big
 
 
-def test_config_loads_yaml(tmp_path):
+def test_config_loads_yaml(tmp_path, monkeypatch):
     from kubani_gpu_broker.config import load_config
 
     p = tmp_path / "config.yaml"
     p.write_text(
         json.dumps(
             {
-                "engines": {"main": {"base_url": "http://llm-engine:8000"}},
+                "engines": {"main": {"base_url": "http://llm-engine:8000", "sleep_enabled": True}},
+                "policies": {"auto_sleep_enabled": False},
                 "proxy": {"connect_timeout_seconds": 5},
             }
         )
     )
+    monkeypatch.setenv("GPU_BROKER_ADMIN_TOKEN", "from-env")
     cfg = load_config(p)
     assert cfg.engines["main"].base_url == "http://llm-engine:8000"
+    assert cfg.engines["main"].sleep_enabled is True
     assert cfg.proxy.connect_timeout_seconds == 5
+    assert cfg.admin_token == "from-env"

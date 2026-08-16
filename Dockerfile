@@ -14,5 +14,5 @@ COPY --from=build /app/src /app/src
 ENV PATH="/app/.venv/bin:$PATH" \
     CONFIG_PATH=/etc/gpu-broker/config.yaml
 USER broker
-EXPOSE 8080
-CMD ["uvicorn", "--factory", "kubani_gpu_broker:create_app", "--host", "0.0.0.0", "--port", "8080"]
+EXPOSE 8080 8081
+CMD ["python", "-m", "kubani_gpu_broker"]

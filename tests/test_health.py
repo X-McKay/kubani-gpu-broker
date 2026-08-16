@@ -9,7 +9,7 @@ async def test_readyz(broker_client):
     assert resp.status_code == 200
 
 
-async def test_metrics_endpoint_serves_prometheus(broker_client):
+async def test_public_app_does_not_serve_metrics(broker_client):
+    # Metrics live on the admin listener only (spec section 24.2).
     resp = await broker_client.get("/metrics")
-    assert resp.status_code == 200
-    assert "kubani_gpu_broker" in resp.text
+    assert resp.status_code == 404
