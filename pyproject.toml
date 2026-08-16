@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.7",
     "prometheus-client>=0.21",
     "PyYAML>=6.0",
+    "kubernetes_asyncio>=32.0",
 ]
 
 [dependency-groups]

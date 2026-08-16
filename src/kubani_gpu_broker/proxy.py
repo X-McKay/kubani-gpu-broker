@@ -17,7 +17,13 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 
-from .state import EngineUnavailableError, GpuUnavailableError, WakeFailedError
+from .state import (
+    EngineState,
+    EngineUnavailableError,
+    GpuOwnershipState,
+    GpuUnavailableError,
+    WakeFailedError,
+)
 
 if TYPE_CHECKING:
     from .app import Broker
@@ -62,6 +68,27 @@ def build_router(broker: Broker) -> APIRouter:
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
     )
     async def proxy(request: Request, path: str) -> Response:
+        owner_state = broker.ownership.state
+        if owner_state in (GpuOwnershipState.DRAINING, GpuOwnershipState.TRAINING):
+            # Spec section 8.3: never hold an inference request open for a
+            # training run; fail fast with Retry-After.
+            metrics.requests_total.labels(engine=engine.name, status="gpu_unavailable").inc()
+            return _error_response(
+                503,
+                "gpu_temporarily_unavailable",
+                "The inference GPU is temporarily allocated to an exclusive workload.",
+                **{"Retry-After": "30"},
+            )
+        if owner_state == GpuOwnershipState.RECOVERING and engine.state != EngineState.AWAKE:
+            # Spec section 22.4: already-awake inference continues, but a
+            # sleeping engine is never woken while ownership is uncertain.
+            metrics.requests_total.labels(engine=engine.name, status="gpu_unavailable").inc()
+            return _error_response(
+                503,
+                "gpu_ownership_recovering",
+                "GPU ownership is being re-established; the engine cannot be woken.",
+                **{"Retry-After": "30"},
+            )
         try:
             await engine.ensure_awake()
         except GpuUnavailableError:

@@ -32,6 +32,14 @@ class PoliciesConfig(BaseModel):
     auto_sleep_enabled: bool = False
     min_awake_seconds: float = 120.0
     idle_check_interval_seconds: float = 10.0
+    drain_timeout_seconds: float = 300.0
+
+
+class GpuConfig(BaseModel):
+    leases_enabled: bool = False
+    lease_name: str = "sparky-gpu"
+    lease_namespace: str = "vllm"
+    lease_duration_seconds: int = 180
 
 
 class ProxyConfig(BaseModel):
@@ -49,6 +57,7 @@ class ServerConfig(BaseModel):
 class BrokerConfig(BaseModel):
     engines: dict[str, EngineConfig]
     policies: PoliciesConfig = PoliciesConfig()
+    gpu: GpuConfig = GpuConfig()
     proxy: ProxyConfig = ProxyConfig()
     server: ServerConfig = ServerConfig()
     admin_token: str | None = None

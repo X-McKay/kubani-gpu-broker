@@ -142,10 +142,13 @@ class Engine:
         """
         if not self.cfg.sleep_enabled:
             return
+        if self._state == EngineState.AWAKE:
+            # Already-awake engines keep serving even in RECOVERING
+            # (spec section 22.4); DRAINING/TRAINING are blocked at the
+            # proxy gate before this point.
+            return
         if not self._ownership.available():
             raise GpuUnavailableError(self.name)
-        if self._state == EngineState.AWAKE:
-            return
 
         async with self.transition_lock:
             # Re-check everything after acquiring the lock (spec section 19).
