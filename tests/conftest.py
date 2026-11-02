@@ -52,6 +52,8 @@ class FakeVllm:
         self.wake_noop = False
         # When set, the streaming endpoint blocks mid-stream until released.
         self.stream_gate: asyncio.Event | None = None
+        # When set, /v1/models requires this bearer, like vllm --api-key.
+        self.required_key: str | None = None
         self._register()
 
     def _register(self) -> None:
@@ -80,7 +82,11 @@ class FakeVllm:
             return {"status": "ok"}
 
         @app.get("/v1/models")
-        async def models():
+        async def models(request: Request):
+            if self.required_key and (
+                request.headers.get("authorization") != f"Bearer {self.required_key}"
+            ):
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
             if self.sleeping:
                 self.violations += 1
                 return JSONResponse({"error": "engine is sleeping"}, status_code=500)
