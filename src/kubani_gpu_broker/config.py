@@ -7,7 +7,8 @@ docs/plans/active/2026-08-16-vllm-gpu-sleep-wake-broker.md
 The admin bearer token is intentionally NOT part of the YAML file (which
 lives in a ConfigMap): it comes from the GPU_BROKER_ADMIN_TOKEN
 environment variable, sourced from a SOPS-managed Secret. Admin
-endpoints fail closed (401) when no token is configured.
+endpoints fail closed (401) when no token is configured. An engine's API key
+follows the same rule: the YAML names the variable that holds it.
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ from pydantic import BaseModel
 
 class EngineConfig(BaseModel):
     base_url: str
+    # Environment variable holding the key the engine's --api-key requires. The
+    # proxy forwards each client's own Authorization header; this is only for the
+    # broker's own calls under /v1.
+    api_key_env: str | None = None
     sleep_enabled: bool = False
     idle_timeout_seconds: float = 600.0
     idle_sleep_level: int = 1
@@ -71,4 +76,7 @@ def load_config(path: str | Path | None = None) -> BrokerConfig:
     token = os.environ.get("GPU_BROKER_ADMIN_TOKEN")
     if token:
         cfg.admin_token = token
+    for name, engine in cfg.engines.items():
+        if engine.api_key_env and not os.environ.get(engine.api_key_env):
+            raise ValueError(f"engine {name}: {engine.api_key_env} is not set")
     return cfg

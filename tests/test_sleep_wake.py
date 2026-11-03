@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import asyncio
 
-from kubani_gpu_broker.state import EngineState
+import pytest
+
+from conftest import make_broker
+from kubani_gpu_broker.config import load_config
+from kubani_gpu_broker.state import EngineState, WakeFailedError
 
 
 async def _sleep_engine(broker, fake_vllm):
@@ -126,3 +130,45 @@ async def test_refresh_state_reconstructs_from_engine(fake_vllm):
     await broker.engine.refresh_state()
     assert broker.engine.state == EngineState.AWAKE
     await broker.client.aclose()
+
+
+async def test_wake_probe_sends_the_engine_key(fake_vllm, monkeypatch):
+    monkeypatch.setenv("ENGINE_KEY", "engine-secret")
+    fake_vllm.required_key = "engine-secret"
+    broker = make_broker(
+        fake_vllm,
+        api_key_env="ENGINE_KEY",
+        sleep_enabled=True,
+        wake_timeout_seconds=2.0,
+        wake_poll_interval_seconds=0.01,
+    )
+    await _sleep_engine(broker, fake_vllm)
+
+    await broker.engine.ensure_awake()
+
+    assert broker.engine.state == EngineState.AWAKE
+
+
+async def test_wake_fails_when_the_engine_rejects_the_probe(fake_vllm):
+    fake_vllm.required_key = "engine-secret"
+    broker = make_broker(
+        fake_vllm, sleep_enabled=True, wake_timeout_seconds=2.0, wake_poll_interval_seconds=0.01
+    )
+    await _sleep_engine(broker, fake_vllm)
+
+    with pytest.raises(WakeFailedError):
+        await broker.engine.ensure_awake()
+
+    assert broker.engine.state == EngineState.ERROR
+
+
+def test_load_config_refuses_a_missing_engine_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("ENGINE_KEY", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text("engines:\n  main:\n    base_url: http://x\n    api_key_env: ENGINE_KEY\n")
+
+    with pytest.raises(ValueError, match="ENGINE_KEY is not set"):
+        load_config(path)
+
+    monkeypatch.setenv("ENGINE_KEY", "engine-secret")
+    assert load_config(path).engines["main"].api_key_env == "ENGINE_KEY"

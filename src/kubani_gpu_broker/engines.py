@@ -14,6 +14,7 @@ wake path polls /is_sleeping and then performs an active probe
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import httpx
@@ -119,15 +120,16 @@ class Engine:
         resp.raise_for_status()
 
     async def _post_wake_up(self) -> None:
-        resp = await self._client.post(
-            f"{self.base_url}/wake_up", timeout=self._control_timeout()
-        )
+        resp = await self._client.post(f"{self.base_url}/wake_up", timeout=self._control_timeout())
         resp.raise_for_status()
 
     async def _verify_serving(self) -> None:
         """Active probe: the engine must actually answer an API request."""
+        headers = {}
+        if self.cfg.api_key_env:
+            headers["Authorization"] = f"Bearer {os.environ[self.cfg.api_key_env]}"
         resp = await self._client.get(
-            f"{self.base_url}/v1/models", timeout=self._control_timeout()
+            f"{self.base_url}/v1/models", headers=headers, timeout=self._control_timeout()
         )
         resp.raise_for_status()
 
